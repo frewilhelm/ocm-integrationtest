@@ -44,20 +44,19 @@ permissions:
   contents: write
 jobs:
   test-ocm:
-    runs-on: large_runner
+    runs-on: ubuntu-latest
     steps:
-      - name: Generate token
-        id: generate_token
-        uses: tibdex/github-app-token@v2
-        with: # OCMBot
-          app_id: ${{ secrets.OCMBOT_APP_ID }}
-          private_key: ${{ secrets.OCMBOT_PRIV_KEY }}
+#      - name: Generate token
+#        id: generate_token
+#        uses: tibdex/github-app-token@v2
+#        with: # OCMBot
+#          app_id: ${{ secrets.OCMBOT_APP_ID }}
+#          private_key: ${{ secrets.OCMBOT_PRIV_KEY }}
       - name: checkout inttest
         uses: actions/checkout@v6
         with:
           # hard code repo because we want to reuse it across workflows
-          repository: open-component-model/ocm-integrationtest
-          token: ${{ steps.generate_token.outputs.token }}
+          repository: frewilhelm/ocm-integrationtest
       - name: get-pr
         if: ${{ inputs.ref!= '' }}
         run: |
@@ -85,7 +84,6 @@ jobs:
           repository: ${{ env.REPO }}
           ref: ${{ env.REF }}
           path: ocm
-          token: ${{ steps.generate_token.outputs.token }}
       - name: get ocm commit
         if: ${{ ! inputs.github.event.client_payload }}
         run: |
@@ -197,62 +195,62 @@ jobs:
             echo "$now | ${ocm_ver} | &#10060; (failed)" >> README.md
           fi
           exit ${res}
-      - name: Upload Report
-        # only upload the artifact if we are not on a PR
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          if-no-files-found: error
-          overwrite: true
-          retention-days: 7
-          name: test-report
-          path: docs/report.html
-      - name: stop docker registry
-        if: always()
-        run: |
-          docker container stop registry
-          docker container rm -v registry
-      - name: push
-        uses: github-actions-x/commit@v2.9
-        if: ${{ env.REF_FROM_OTHER_WORKFLOW == false && always()}} # push result also on failure
-        with:
-          github-token: ${{ steps.generate_token.outputs.token }}
-          commit-message: 'add test report'
-          files: README.md docs/
-          name: github-ation
-          email: noreply@github.com
-      - name: send test result as PR comment
-        if: ${{ env.REF_FROM_OTHER_WORKFLOW == false && github.event.client_payload }}
-        uses: actions/github-script@v8
-        with:
-          github-token: ${{ steps.generate_token.outputs.token }}
-          script: |
-            github.rest.issues.createComment({
-              owner: 'open-component-model',
-              repo: 'ocm',
-              issue_number: ${{ env.PR_NUMBER }},
-              body: 'Integration Tests for ${{ env.SHA }} run with result: ${{ env.TEST_RESULT_STR }}!'
-              })
-      - name: Post to a Slack channel
-        id: slack
-        uses: slackapi/slack-github-action@91efab103c0de0a537f72a35f6b8cda0ee76bf0a
-        if: ${{ env.REF_FROM_OTHER_WORKFLOW == false && github.ref_name  == 'main' && github.event_name == 'schedule' && always()}}
-        with:
-          method: chat.postMessage
-          token: ${{ secrets.SLACK_BOT_TOKEN }}
-          channel-id: 'C03NF7KH128'
-          payload: |
-            {
-              "channel": "C03NF7KH128",
-              "text" : "OCM Integration Test Report, Status: ${{ job.status }}",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text":
-                    {
-                      "type": "mrkdwn",
-                      "text": "Integration Test for OCM CLI ${{ job.status == 'success' && ':white_check_mark:' || ':x:' }}  <https://open-component-model.github.io/ocm-integrationtest/report-${{ env.SHA }}.html|TestReport>  <https://github.com/open-component-model/ocm-integrationtest/actions/runs/${{ github.run_id }}|Github Action>"
-                    }
-                }
-              ]
-            }
+#      - name: Upload Report
+#        # only upload the artifact if we are not on a PR
+#        if: always()
+#        uses: actions/upload-artifact@v6
+#        with:
+#          if-no-files-found: error
+#          overwrite: true
+#          retention-days: 7
+#          name: test-report
+#          path: docs/report.html
+#      - name: stop docker registry
+#        if: always()
+#        run: |
+#          docker container stop registry
+#          docker container rm -v registry
+#      - name: push
+#        uses: github-actions-x/commit@v2.9
+#        if: ${{ env.REF_FROM_OTHER_WORKFLOW == false && always()}} # push result also on failure
+#        with:
+#          github-token: ${{ steps.generate_token.outputs.token }}
+#          commit-message: 'add test report'
+#          files: README.md docs/
+#          name: github-ation
+#          email: noreply@github.com
+#      - name: send test result as PR comment
+#        if: ${{ env.REF_FROM_OTHER_WORKFLOW == false && github.event.client_payload }}
+#        uses: actions/github-script@v8
+#        with:
+#          github-token: ${{ steps.generate_token.outputs.token }}
+#          script: |
+#            github.rest.issues.createComment({
+#              owner: 'open-component-model',
+#              repo: 'ocm',
+#              issue_number: ${{ env.PR_NUMBER }},
+#              body: 'Integration Tests for ${{ env.SHA }} run with result: ${{ env.TEST_RESULT_STR }}!'
+#              })
+#      - name: Post to a Slack channel
+#        id: slack
+#        uses: slackapi/slack-github-action@91efab103c0de0a537f72a35f6b8cda0ee76bf0a
+#        if: ${{ env.REF_FROM_OTHER_WORKFLOW == false && github.ref_name  == 'main' && github.event_name == 'schedule' && always()}}
+#        with:
+#          method: chat.postMessage
+#          token: ${{ secrets.SLACK_BOT_TOKEN }}
+#          channel-id: 'C03NF7KH128'
+#          payload: |
+#            {
+#              "channel": "C03NF7KH128",
+#              "text" : "OCM Integration Test Report, Status: ${{ job.status }}",
+#              "blocks": [
+#                {
+#                  "type": "section",
+#                  "text":
+#                    {
+#                      "type": "mrkdwn",
+#                      "text": "Integration Test for OCM CLI ${{ job.status == 'success' && ':white_check_mark:' || ':x:' }}  <https://open-component-model.github.io/ocm-integrationtest/report-${{ env.SHA }}.html|TestReport>  <https://github.com/open-component-model/ocm-integrationtest/actions/runs/${{ github.run_id }}|Github Action>"
+#                    }
+#                }
+#              ]
+#            }
