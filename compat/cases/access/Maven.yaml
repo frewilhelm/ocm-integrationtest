@@ -1,0 +1,73 @@
+# access:Maven: not in ocm-spec, but v1 ships a Maven access plugin and
+# v2 ships none today. All four spellings fail on v2 with the same
+# plugin-not-found prefix. Once v2 implements the plugin, flip the v2
+# construct/transfer expectations to `pass`.
+components:
+- name: ocm.software/compat/access/maven
+  version: 1.0.0
+  provider:
+    name: ocm.software
+  labels:
+  - name: compat.ocm.software/case
+    value:
+      id: access:Maven
+  - name: compat.ocm.software/fixtures
+    value:
+      - name: MAVEN
+        kind: hermeticMavenRepo
+        with:
+          group: org.apache.commons
+          artifact: commons-lang3
+          version: "3.14.0"
+          jar: "compat access:Maven\n"
+  - name: compat.ocm.software/expect
+    value:
+      construct:
+        v1: pass
+        v2:
+          outcome: fail
+          expectKind: v2:access_plugin_missing
+      transfer:
+        v1: pass
+        v2: skip
+  resources:
+  - name: r-mvn-canonical
+    type: jar
+    version: 3.14.0
+    relation: external
+    access:
+      type: Maven/v1
+      repoUrl: ${MAVEN.url}
+      groupId: org.apache.commons
+      artifactId: commons-lang3
+      version: "3.14.0"
+  - name: r-mvn-canonical-noversion
+    type: jar
+    version: 3.14.0
+    relation: external
+    access:
+      type: Maven
+      repoUrl: ${MAVEN.url}
+      groupId: org.apache.commons
+      artifactId: commons-lang3
+      version: "3.14.0"
+  - name: r-mvn-lower-alias
+    type: jar
+    version: 3.14.0
+    relation: external
+    access:
+      type: maven
+      repoUrl: ${MAVEN.url}
+      groupId: org.apache.commons
+      artifactId: commons-lang3
+      version: "3.14.0"
+  - name: r-mvn-lower-v1-alias
+    type: jar
+    version: 3.14.0
+    relation: external
+    access:
+      type: maven/v1
+      repoUrl: ${MAVEN.url}
+      groupId: org.apache.commons
+      artifactId: commons-lang3
+      version: "3.14.0"

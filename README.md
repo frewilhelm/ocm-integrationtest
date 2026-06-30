@@ -27,6 +27,17 @@ This project uses Python 3.9+ to run the tests against the [OCM CLI](https://git
 * Run tests: `pytest tests`
 * Stop and remove container: `./stop_docker.sh`
 
+## OCM v1 / v2 Compatibility Suite
+
+The `compat/` directory holds a separate Go/Ginkgo suite that runs the same
+OCM component-constructor through both the v1 (`open-component-model/ocm`)
+and v2 (`open-component-model/open-component-model`) CLIs, through two
+phases each (construct, then transfer). Cases are YAML files under
+`compat/cases/`; expectations ride on `compat.ocm.software/*` labels. See
+[`compat/README.md`](compat/README.md) for the layout, fixture system, and
+how to add a case. CI runs it nightly via
+[`.github/workflows/compat-test.yaml`](.github/workflows/compat-test.yaml).
+
 ## Contributing
 
 This project is open to feature requests/suggestions, bug reports etc. via [GitHub issues](https://github.com/open-component-model/ocm-integrationtest/issues). Contribution and feedback are encouraged and always welcome. For more information about how to contribute, see our [Contributing Guide](https://ocm.software/community/contributing/).

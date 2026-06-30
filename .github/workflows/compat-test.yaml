@@ -1,0 +1,218 @@
+# Compatibility test between OCM v1 (open-component-model/ocm) and v2
+# (open-component-model/open-component-model).
+#
+# Triggers:
+#   - schedule / pull_request: both legs use the default container images.
+#   - workflow_dispatch: caller can override v1_image / v2_image, or supply
+#     v1_pr / v2_pr to build that leg from a PR head ref instead.
+#
+# When v1_pr or v2_pr is set, the corresponding leg checks out the PR
+# source, builds the binary, and the test points at the local path via
+# OCM_V1_CMD=bin:<path> / OCM_V2_CMD=bin:<path>. Otherwise the leg uses
+# OCM_V*_CMD=docker:<image> and the Go test invokes `docker run` directly.
+#
+# Trust model for workflow_dispatch with v*_pr: the build steps execute
+# `make bin/ocm` (v1) and `task cli:build` (v2) from the foreign PR head.
+# Anyone who can trigger workflow_dispatch can therefore run arbitrary
+# code on the runner via a malicious Makefile / Taskfile.yml in that PR.
+# workflow_dispatch is gated to repository write access by default; do
+# NOT broaden that, and treat the v*_pr inputs as you would any
+# `pull_request_target`-style elevation. The job's `permissions:` block
+# below is narrow on purpose (contents: read, packages: read) to limit
+# blast radius if an attacker does land arbitrary code execution here.
+name: OCM v1/v2 Compatibility Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      v1_image:
+        description: v1 OCM image to test against. Ignored if v1_pr is set.
+        default: ghcr.io/open-component-model/ocm:latest
+      v1_pr:
+        description: |
+          PR number in open-component-model/ocm. When set, v1 is built from
+          that PR and used instead of v1_image.
+        type: number
+        required: false
+      v2_image:
+        description: v2 CLI image to test against. Ignored if v2_pr is set.
+        default: ghcr.io/open-component-model/cli:latest
+      v2_pr:
+        description: |
+          PR number in open-component-model/open-component-model. When set,
+          v2 is built from that PR and used instead of v2_image.
+        type: number
+        required: false
+  pull_request:
+    branches: [main]
+    paths:
+      - compat/**
+      - .github/workflows/compat-test.yaml
+  schedule:
+    - cron: '23 5 * * *'
+
+# Default-deny at the workflow level; the test job re-grants only what it needs.
+permissions: {}
+
+# Collapse superseded PR runs; preserve scheduled/dispatch runs.
+concurrency:
+  group: compat-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: Compat v1 vs v2
+    runs-on: ubuntu-24.04-arm  # arm64: GHCR images for v1/v2 publish arm64 manifests
+    # Job-level ceiling: the suite typically runs in 5-15 min; 45 covers
+    # cold testcontainers image pulls plus a generous slack for outliers,
+    # while still bounding a hung step to a fraction of the 6 h default.
+    timeout-minutes: 45
+    environment:
+      name: notifications
+      deployment: false
+    permissions:
+      contents: read     # checkout this repo + optional v1/v2 PR sources
+      packages: read     # pull v1/v2 images from GHCR
+    steps:
+      - name: Checkout ocm-integrationtest
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version-file: compat/go.mod
+          cache-dependency-path: compat/go.sum
+
+      # --- v1 leg: build from PR if requested ---
+      - name: Checkout v1 PR
+        if: github.event.inputs.v1_pr != ''
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          repository: open-component-model/ocm
+          ref: refs/pull/${{ github.event.inputs.v1_pr }}/head
+          path: ocm-v1-src
+          persist-credentials: false
+      - name: Build v1 from PR
+        if: github.event.inputs.v1_pr != ''
+        working-directory: ocm-v1-src
+        # `make bin/ocm` is the v1 target that produces the CLI binary
+        # (Makefile in open-component-model/ocm). Captured into V1_BIN so
+        # the test step doesn't have to repeat the path literal: when
+        # upstream moves the binary, this one line changes.
+        run: |
+          make bin/ocm
+          echo "V1_BIN=${GITHUB_WORKSPACE}/ocm-v1-src/bin/ocm" >> "$GITHUB_ENV"
+
+      # --- v2 leg: build from PR if requested ---
+      - name: Checkout v2 PR
+        if: github.event.inputs.v2_pr != ''
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          repository: open-component-model/open-component-model
+          ref: refs/pull/${{ github.event.inputs.v2_pr }}/head
+          path: ocm-v2-src
+          persist-credentials: false
+      - name: Install Task
+        if: github.event.inputs.v2_pr != ''
+        uses: arduino/setup-task@24c5e13bce349197642746563945fcdf9355e8f4 # v2.0.0
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build v2 from PR
+        if: github.event.inputs.v2_pr != ''
+        working-directory: ocm-v2-src
+        # task cli:build emits an `ocm` binary somewhere under cli/tmp/bin
+        # today. The exact path is upstream's prerogative; locate the
+        # produced binary instead of hardcoding cli/tmp/bin/ocm and
+        # silently breaking when upstream restructures.
+        run: |
+          task cli:build
+          bin="$(find cli/tmp/bin -type f -name ocm -perm -u+x | head -n 1)"
+          if [ -z "$bin" ]; then
+            echo "v2 build produced no 'ocm' binary under cli/tmp/bin/" >&2
+            find cli/tmp -type f -maxdepth 4 -printf '%p\n' >&2
+            exit 1
+          fi
+          echo "V2_BIN=${GITHUB_WORKSPACE}/ocm-v2-src/${bin}" >> "$GITHUB_ENV"
+
+      - name: Resolve OCM v1/v2 specs
+        # Each leg resolves to bin:<path> when a PR was supplied (V*_BIN is
+        # set by the build steps above), otherwise to docker:<image> using
+        # the explicit input or the :latest default. Computed here so the
+        # actual test step stays a single command, and so workflow-side
+        # truth tables don't sprawl into nested format()/&& soup.
+        env:
+          V1_IMAGE: ${{ github.event.inputs.v1_image }}
+          V2_IMAGE: ${{ github.event.inputs.v2_image }}
+        run: |
+          if [ -n "${V1_BIN-}" ]; then
+            echo "OCM_V1_CMD=bin:${V1_BIN}" >> "$GITHUB_ENV"
+          else
+            echo "OCM_V1_CMD=docker:${V1_IMAGE:-ghcr.io/open-component-model/ocm:latest}" >> "$GITHUB_ENV"
+          fi
+          if [ -n "${V2_BIN-}" ]; then
+            echo "OCM_V2_CMD=bin:${V2_BIN}" >> "$GITHUB_ENV"
+          else
+            echo "OCM_V2_CMD=docker:${V2_IMAGE:-ghcr.io/open-component-model/cli:latest}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Run compat tests
+        working-directory: compat
+        # Step-level ceiling: the test loop itself rarely exceeds 5 min,
+        # so 30 still gives multiple orders of magnitude of headroom but
+        # catches a wedged docker pull / hung CLI before the job timeout.
+        timeout-minutes: 30
+        run: |
+          mkdir -p ginkgo-reports
+          go run github.com/onsi/ginkgo/v2/ginkgo \
+            --label-filter=compat \
+            --randomize-all --fail-on-pending \
+            --json-report=ginkgo-reports/report.json \
+            --junit-report=ginkgo-reports/junit.xml \
+            -p ./...
+
+      - name: Upload Ginkgo reports
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ginkgo-reports
+          path: compat/ginkgo-reports/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Post to Slack
+        id: slack
+        # TODO: this Slack block is duplicated in
+        # .github/workflows/integrationtest.yaml. Extract to a composite
+        # action under .github/actions/notify-slack/ when a third caller
+        # appears, or now if you'd rather pay the refactor once.
+        # Pinned to v2.1.0 by SHA; dependabot keeps it current.
+        uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c # v2.1.0
+        # Notify only on the nightly scheduled run on main. PRs and
+        # workflow_dispatch results are visible in the run UI and don't
+        # need Slack noise. `always()` forces this step to run even when
+        # the test step failed: without it a failing job would skip
+        # straight past the notifier and the on-call would never hear.
+        # If push-to-main failures become important, broaden the trigger
+        # set above and add `github.event_name == 'push'` here.
+        if: ${{ github.ref_name == 'main' && github.event_name == 'schedule' && always() }}
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          channel-id: 'C03NF7KH128'
+          payload: |
+            {
+              "channel": "C03NF7KH128",
+              "text": "OCM v1/v2 Compatibility Test Report, Status: ${{ job.status }}",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "Compat Test v1/v2 ${{ job.status == 'success' && ':white_check_mark:' || ':x:' }}  <https://github.com/open-component-model/ocm-integrationtest/actions/runs/${{ github.run_id }}|GitHub Action>"
+                  }
+                }
+              ]
+            }

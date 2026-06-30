@@ -1,0 +1,37 @@
+# input:dir: directory packaged as tar+gzip; both legs supported.
+components:
+- name: ocm.software/compat/input/dir
+  version: 1.0.0
+  provider:
+    name: ocm.software
+  labels:
+  - name: compat.ocm.software/case
+    value:
+      id: input:dir
+  - name: compat.ocm.software/fixtures
+    value:
+    - name: dir
+      kind: writeDir
+      with:
+        path: payload-dir
+        files:
+          a.txt: "a\n"
+          sub/b.txt: "b\n"
+  - name: compat.ocm.software/expect
+    value:
+      construct:
+        v1: pass
+        v2: pass
+      transfer:
+        v1: pass
+        v2: pass
+  resources:
+  - name: r-dir
+    type: directory
+    version: 1.0.0
+    relation: local
+    input:
+      type: dir
+      path: ${dir.path}
+      mediaType: application/x-tar
+      compress: true

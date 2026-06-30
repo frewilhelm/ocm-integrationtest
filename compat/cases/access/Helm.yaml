@@ -1,0 +1,51 @@
+# access:Helm: canonical Helm/v1. Both legs accept all four spellings.
+components:
+- name: ocm.software/compat/access/helm
+  version: 1.0.0
+  provider:
+    name: ocm.software
+  labels:
+  - name: compat.ocm.software/case
+    value:
+      id: access:Helm
+  - name: compat.ocm.software/expect
+    value:
+      construct:
+        v1: pass
+        v2: pass
+      transfer:
+        v1: pass
+        v2: pass
+  resources:
+  - name: r-helm-canonical
+    type: helmChart
+    version: 6.7.1
+    relation: external
+    access:
+      type: Helm/v1
+      helmChart: podinfo:6.7.1
+      helmRepository: https://stefanprodan.github.io/podinfo
+  - name: r-helm-canonical-noversion
+    type: helmChart
+    version: 6.7.1
+    relation: external
+    access:
+      type: Helm
+      helmChart: podinfo:6.7.1
+      helmRepository: https://stefanprodan.github.io/podinfo
+  - name: r-helm-lower-alias
+    type: helmChart
+    version: 6.7.1
+    relation: external
+    access:
+      type: helm
+      helmChart: podinfo:6.7.1
+      helmRepository: https://stefanprodan.github.io/podinfo
+  - name: r-helm-lower-v1-alias
+    type: helmChart
+    version: 6.7.1
+    relation: external
+    access:
+      type: helm/v1
+      helmChart: podinfo:6.7.1
+      helmRepository: https://stefanprodan.github.io/podinfo

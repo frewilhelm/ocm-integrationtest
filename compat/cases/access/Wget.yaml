@@ -1,0 +1,63 @@
+# access:Wget: canonical Wget/v1 plus three spelling variants. v1 supports
+# the type; v2 ships no Wget access plugin today, so every spelling fails
+# with `failed to get plugin for typ "..."`. Once v2 implements the
+# plugin, flip the v2 construct/transfer expectations to `pass`.
+components:
+- name: ocm.software/compat/access/wget
+  version: 1.0.0
+  provider:
+    name: ocm.software
+  labels:
+  - name: compat.ocm.software/case
+    value:
+      id: access:Wget
+  - name: compat.ocm.software/fixtures
+    value:
+    - name: HTTP
+      kind: httpFileServer
+      with:
+        files:
+          payload.txt: "Wget access compat\n"
+  - name: compat.ocm.software/expect
+    value:
+      construct:
+        v1: pass
+        v2:
+          outcome: fail
+          expectKind: v2:access_plugin_missing
+      transfer:
+        v1: pass
+        v2: skip
+  resources:
+  - name: r-wget-canonical
+    type: plainText
+    version: 1.0.0
+    relation: external
+    access:
+      type: Wget/v1
+      url: ${HTTP.payload.txt.url}
+      mediaType: text/plain
+  - name: r-wget-canonical-noversion
+    type: plainText
+    version: 1.0.0
+    relation: external
+    access:
+      type: Wget
+      url: ${HTTP.payload.txt.url}
+      mediaType: text/plain
+  - name: r-wget-lower-alias
+    type: plainText
+    version: 1.0.0
+    relation: external
+    access:
+      type: wget
+      url: ${HTTP.payload.txt.url}
+      mediaType: text/plain
+  - name: r-wget-lower-v1-alias
+    type: plainText
+    version: 1.0.0
+    relation: external
+    access:
+      type: wget/v1
+      url: ${HTTP.payload.txt.url}
+      mediaType: text/plain

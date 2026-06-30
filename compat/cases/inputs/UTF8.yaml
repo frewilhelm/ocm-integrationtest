@@ -1,0 +1,27 @@
+# input:utf8: inline UTF-8 text; both legs supported.
+components:
+- name: ocm.software/compat/input/utf8
+  version: 1.0.0
+  provider:
+    name: ocm.software
+  labels:
+  - name: compat.ocm.software/case
+    value:
+      id: input:utf8
+  - name: compat.ocm.software/expect
+    value:
+      construct:
+        v1: pass
+        v2: pass
+      transfer:
+        v1: pass
+        v2: pass
+  resources:
+  - name: r-utf8
+    type: plainText
+    version: 1.0.0
+    relation: local
+    input:
+      type: utf8
+      mediaType: text/plain
+      text: "utf8 compat payload\n"

@@ -1,0 +1,85 @@
+# access:OCIImageLayer: layer-level OCI access. v1 registers all four
+# spellings (OCIImageLayer/v1, OCIImageLayer, ociBlob, ociBlob/v1) as
+# aliases for the same access method, which targets a single layer blob by
+# digest inside an existing repository. v1 needs an `oci.config.ocm.software/v1`
+# alias to talk plain-HTTP to the testcontainers registry; the
+# ociArtifact fixture wires that automatically via V1PlainHTTPConfigArgs.
+#
+# v2 decodes all four spellings (no plugin miss) but the v2 digest
+# processor rejects each one with
+#   'unsupported access type <spelling>: expected OCI image'
+# because the resource declares type: blob, not ociImage. The check is
+# tied to the resource type, not the access type, so even though v2
+# understands the spec it refuses to digest it through the OCIImageLayer
+# code path. errSubstr matches the spelling-independent suffix.
+#
+# The fixture pushes a one-layer image; image.layerRef is the bare
+# host:port/repo form OCIImageLayer's ref: field expects, distinct from
+# OCIImage's image.ref (which is the full repo:tag).
+#
+# size is omitted on purpose: v1 treats absent/zero size as "unknown"
+# and resolves from the registry, and the runner's substituteScalars
+# coerces every substitution to !!str, so passing image.layerSize would
+# decode as a string into v1's int64 field.
+components:
+- name: ocm.software/compat/access/ociimagelayer
+  version: 1.0.0
+  provider:
+    name: ocm.software
+  labels:
+  - name: compat.ocm.software/case
+    value:
+      id: access:OCIImageLayer
+  - name: compat.ocm.software/fixtures
+    value:
+    - name: image
+      kind: ociArtifact
+      with:
+        repo: compat/access-oci-layer
+        tag: v1
+        payload: "OCIImageLayer access compat\n"
+  - name: compat.ocm.software/expect
+    value:
+      construct:
+        v1: pass
+        v2: { outcome: fail, expectKind: v2:expected_oci_image }
+      transfer:
+        v1: pass
+        v2: skip
+  resources:
+  - name: r-oil-canonical
+    type: blob
+    version: 1.0.0
+    relation: external
+    access:
+      type: OCIImageLayer/v1
+      ref: ${image.layerRef}
+      mediaType: ${image.layerMedia}
+      digest: ${image.layerDigest}
+  - name: r-oil-canonical-noversion
+    type: blob
+    version: 1.0.0
+    relation: external
+    access:
+      type: OCIImageLayer
+      ref: ${image.layerRef}
+      mediaType: ${image.layerMedia}
+      digest: ${image.layerDigest}
+  - name: r-oil-ociblob-alias
+    type: blob
+    version: 1.0.0
+    relation: external
+    access:
+      type: ociBlob
+      ref: ${image.layerRef}
+      mediaType: ${image.layerMedia}
+      digest: ${image.layerDigest}
+  - name: r-oil-ociblob-v1-alias
+    type: blob
+    version: 1.0.0
+    relation: external
+    access:
+      type: ociBlob/v1
+      ref: ${image.layerRef}
+      mediaType: ${image.layerMedia}
+      digest: ${image.layerDigest}

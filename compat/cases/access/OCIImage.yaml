@@ -1,0 +1,66 @@
+# access:OCIImage: canonical OCIImage/v1. Both legs accept the spec form
+# plus the legacy aliases `ociArtifact` and `ociRegistry`.
+#
+# `ociImage` (camelCase with lowercase 'i') is NOT a registered alias on
+# either side; only `OCIImage` exists.
+components:
+- name: ocm.software/compat/access/ociartifact
+  version: 1.0.0
+  provider:
+    name: ocm.software
+  labels:
+  - name: compat.ocm.software/case
+    value:
+      id: access:OCIImage
+  - name: compat.ocm.software/fixtures
+    value:
+    - name: image
+      kind: ociArtifact
+      with:
+        repo: compat/access-oci
+        tag: v1
+        payload: "OCIImage access compat\n"
+  - name: compat.ocm.software/expect
+    value:
+      construct:
+        v1: pass
+        v2: pass
+      transfer:
+        v1: pass
+        v2: pass
+  resources:
+  - name: r-oci-image
+    type: ociImage
+    version: 1.0.0
+    relation: external
+    access:
+      type: OCIImage/v1
+      imageReference: ${image.ref}
+  - name: r-oci-image-unversioned
+    type: ociImage
+    version: 1.0.0
+    relation: external
+    access:
+      type: OCIImage
+      imageReference: ${image.ref}
+  - name: r-oci-artifact-alias
+    type: ociImage
+    version: 1.0.0
+    relation: external
+    access:
+      type: ociArtifact
+      imageReference: ${image.ref}
+  - name: r-oci-artifact-v1-alias
+    type: ociImage
+    version: 1.0.0
+    relation: external
+    access:
+      type: ociArtifact/v1
+      imageReference: ${image.ref}
+  - name: r-oci-registry-alias
+    type: ociImage
+    version: 1.0.0
+    relation: external
+    access:
+      type: ociRegistry
+      imageReference: ${image.ref}

@@ -1,0 +1,41 @@
+# input:maven: hermetic Maven repo (httptest, not Maven Central; it
+# rate-limits and the project is called out by name). v2 has no plugin.
+components:
+- name: ocm.software/compat/input/maven
+  version: 1.0.0
+  provider:
+    name: ocm.software
+  labels:
+  - name: compat.ocm.software/case
+    value:
+      id: input:maven
+  - name: compat.ocm.software/fixtures
+    value:
+      - name: MAVEN
+        kind: hermeticMavenRepo
+        with:
+          group: org.apache.commons
+          artifact: commons-lang3
+          version: "3.14.0"
+          jar: "compat input:maven\n"
+  - name: compat.ocm.software/expect
+    value:
+      construct:
+        v1: pass
+        v2:
+          outcome: fail
+          expectKind: v2:input_kind_unsupported
+      transfer:
+        v1: pass
+        v2: skip
+  resources:
+  - name: r-maven
+    type: jar
+    version: 1.0.0
+    relation: local
+    input:
+      type: maven
+      repoUrl: ${MAVEN.url}
+      groupId: org.apache.commons
+      artifactId: commons-lang3
+      version: "3.14.0"
