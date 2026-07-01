@@ -62,8 +62,7 @@ concurrency:
 jobs:
   test:
     name: Compat v1 vs v2
-    runs-on: ubuntu-latest
-    #runs-on: ubuntu-24.04-arm  # arm64: GHCR images for v1/v2 publish arm64 manifests
+    runs-on: ubuntu-24.04-arm
     # Job-level ceiling: the suite typically runs in 5-15 min; 45 covers
     # cold testcontainers image pulls plus a generous slack for outliers,
     # while still bounding a hung step to a fraction of the 6 h default.
