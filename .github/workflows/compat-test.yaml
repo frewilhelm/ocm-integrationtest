@@ -151,7 +151,7 @@ jobs:
           if [ -n "${V1_BIN-}" ]; then
             echo "OCM_V1_CMD=bin:${V1_BIN}" >> "$GITHUB_ENV"
           else
-          echo "OCM_V1_CMD=docker:${V1_IMAGE:-ghcr.io/open-component-model/ocm:latest}" >> "$GITHUB_ENV" # test ARM image
+          echo "OCM_V1_CMD=docker:${V1_IMAGE:-ghcr.io/frewilhelm/test-ocm:1.2.3}" >> "$GITHUB_ENV" # test ARM image
           fi
           if [ -n "${V2_BIN-}" ]; then
             echo "OCM_V2_CMD=bin:${V2_BIN}" >> "$GITHUB_ENV"
