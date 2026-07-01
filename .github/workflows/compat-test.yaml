@@ -27,7 +27,7 @@ on:
     inputs:
       v1_image:
         description: v1 OCM image to test against. Ignored if v1_pr is set.
-        default: ghcr.io/open-component-model/ocm:latest
+        default: ghcr.io/frewilhelm/test-ocm:1.2.3 # test ARM image
       v1_pr:
         description: |
           PR number in open-component-model/ocm. When set, v1 is built from
@@ -150,7 +150,7 @@ jobs:
           if [ -n "${V1_BIN-}" ]; then
             echo "OCM_V1_CMD=bin:${V1_BIN}" >> "$GITHUB_ENV"
           else
-            echo "OCM_V1_CMD=docker:${V1_IMAGE:-ghcr.io/open-component-model/ocm:latest}" >> "$GITHUB_ENV"
+            echo "OCM_V1_CMD=docker:${V1_IMAGE:-ghcr.io/frewilhelm/test-ocm:1.2.3}" >> "$GITHUB_ENV" # test ARM image
           fi
           if [ -n "${V2_BIN-}" ]; then
             echo "OCM_V2_CMD=bin:${V2_BIN}" >> "$GITHUB_ENV"
