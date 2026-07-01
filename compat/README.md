@@ -22,41 +22,41 @@ declared on the case itself.
 
 ```
 compat/
-  cases/
-    access/   one YAML per access type (Helm, OCIImage, S3, ...)
-    inputs/   one YAML per input type (file, dir, helm, ...)
   internal/
-    cases/    YAML loader, ${NAME.key} resolver, label stripper
+    cases/    Go tables: one Case per access/input type
+              (access_cases.go, inputs_cases.go); ${NAME.key} resolver
     cli/      docker:/bin: invoker; URL/path rewrite for containers
     fixtures/ named fixture kinds (httpFileServer, ociArtifact, s3, ...)
     runner/   construct/transfer per leg
-  compat_test.go   Ginkgo bootstrap; discovers cases at suite-init
+  compat_test.go   Ginkgo bootstrap; iterates cases.All()
 ```
 
-## A case is a constructor + labels
+## A case is a constructor + expectations
 
-A case file IS an OCM component-constructor. The test metadata rides on
-`compat.ocm.software/*` labels on the component; the runner strips them
-before invoking the CLI, so the constructor handed to v1/v2 is plain OCM.
+Each case is a Go value pairing a raw component-constructor YAML body
+with the fixtures it needs and per-phase v1/v2 expectations. The
+constructor is byte-for-byte what an OCM user would author; no
+metadata is embedded inside it.
 
-```yaml
-components:
+```go
+var accessWget = &Case{
+    ID: "access:Wget",
+    Notes: "v1 supports the type; v2 has no plugin.",
+    Fixtures: []FixtureSpec{{
+        Name: "HTTP",
+        Kind: "httpFileServer",
+        With: map[string]any{
+            "files": map[string]any{"payload.txt": "Wget access compat\n"},
+        },
+    }},
+    Expect: Expectation{
+        Construct: LegExpect{V1: Pass(), V2: FailKind("v2:access_plugin_missing")},
+        Transfer:  LegExpect{V1: Pass(), V2: Skip("")},
+    },
+    Constructor: `components:
 - name: ocm.software/compat/access/wget
   version: 1.0.0
   provider: { name: ocm.software }
-  labels:
-  - name: compat.ocm.software/case
-    value: { id: access:Wget }
-  - name: compat.ocm.software/fixtures
-    value:
-    - name: HTTP
-      kind: httpFileServer
-      with:
-        files: { payload.txt: "Wget access compat\n" }
-  - name: compat.ocm.software/expect
-    value:
-      construct: { v1: pass, v2: { outcome: fail, errSubstr: 'failed to get plugin for typ "' } }
-      transfer:  { v1: pass, v2: skip }
   resources:
   - name: r-wget
     type: plainText
@@ -66,20 +66,26 @@ components:
       type: Wget/v1
       url: ${HTTP.payload.txt.url}
       mediaType: text/plain
+`,
+}
 ```
 
 Per phase, per leg, the outcome is one of:
 
-- `pass`: CLI exits 0
-- `{outcome: fail, errSubstr: ...}`: CLI exits non-zero, output contains the substring
-- `{outcome: skip, reason: ...}`: phase is reported as skipped with the reason
+- `Pass()`: CLI exits 0
+- `Fail("<substr>")`: CLI exits non-zero and output contains `<substr>`
+- `FailKind("<kind>")`: same as `Fail` but with the substring looked up
+  in the shared `expectKinds` registry in `cases.go` — use this when
+  multiple cases share a wording (v2 plugin-not-found, v2 unsupported
+  input, etc.), so the wording lives in one place
+- `Skip("<reason>")`: phase is reported as skipped with the reason
 
 Multiple resources on the same component capture spelling variants
 (e.g. `Helm/v1`, `Helm`, `helm`, `helm/v1`); construct runs them all in
 one shot so the test surfaces whichever spelling the leg rejects first.
 The variant set differs per case today. Some cover all four, some only
 canonical+`/v1`. Ideally the set would be driven from registry
-introspection; until then, see the case YAMLs under `cases/access/`.
+introspection; until then, see the case tables under `internal/cases/`.
 
 ## Fixtures
 
@@ -137,13 +143,6 @@ Filter to a single case by name (Ginkgo's `--focus`):
 ginkgo --label-filter=compat --focus='access:Wget' -p ./...
 ```
 
-Point the loader at a different case directory via `COMPAT_CASES`
-(useful when bisecting a regression with a stripped-down case set):
-
-```sh
-COMPAT_CASES=/path/to/cases ginkgo --label-filter=compat ./...
-```
-
 > `-p` runs one process per CPU; each worker starts its own OCI registry
 > and MinIO via testcontainers. Drop `-p` on memory-tight CI to share one
 > set across the suite.
@@ -181,10 +180,13 @@ post-mortem inspection.
 
 ## Adding a case
 
-Drop a YAML in `cases/access/` or `cases/inputs/`. The loader picks it up
-at suite-init time; the new `Context` and `It`s appear without a Go change.
-If the case needs a new fixture kind, add it under
-`internal/fixtures/` and `Register()` it in `kinds.go`.
+Edit `internal/cases/access_cases.go` or `internal/cases/inputs_cases.go`:
+add a new `&Case{ID: ..., Constructor: `...`, ...}` value and reference
+it from the file's `init()` `registerCases(...)` call. Package init
+validates the case at test-binary startup, so a broken outcome, unknown
+`ExpectKind`, or multi-component constructor fails fast with a specific
+error rather than mid-run. If the case needs a new fixture kind, add it
+under `internal/fixtures/` and `Register()` it in `kinds.go`.
 
 ## CI
 

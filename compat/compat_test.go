@@ -23,16 +23,6 @@ func TestCompat(t *testing.T) {
 	RunSpecs(t, "compat suite")
 }
 
-// COMPAT_CASES exists so the test binary can be run from outside compat/
-// (e.g. when bisecting against a reduced case set). The "cases" default
-// only works because go test / ginkgo cd into the package directory.
-func casesRoot() string {
-	if v := os.Getenv("COMPAT_CASES"); v != "" {
-		return v
-	}
-	return "cases"
-}
-
 var _ = BeforeSuite(func() {
 	cli.Probe()
 	// Hard-fail rather than degrade into 18 cases all reporting
@@ -52,26 +42,13 @@ var _ = AfterSuite(func() {
 })
 
 var _ = Describe("compat", Label("compat"), func() {
-	// LoadAll runs at Describe-init time, before BeforeSuite. Fine today
-	// because the loader is filesystem+YAML only; if a future loader ever
-	// consults cli.V1/V2, move this into BeforeSuite.
-	loaded, loadErr := cases.LoadAll(casesRoot())
-	if loadErr != nil {
-		// Surface as a failing spec so the user sees it in the report,
-		// not as an init-time panic.
-		It("loads cases", func() {
-			Expect(loadErr).NotTo(HaveOccurred())
-		})
-		return
-	}
-
-	for _, c := range loaded {
+	for _, c := range cases.All() {
 		// ContinueOnFailure: default Ordered would skip every remaining
 		// spec on the first failure, hiding the v2 result whenever v1
 		// fails unexpectedly. Per-leg cascade gating lives in
 		// runner.Transfer (it skips when its own leg's construct
 		// produced no CTF).
-		Context(c.ID(), Ordered, ContinueOnFailure, Label(c.Kind()), func() {
+		Context(c.ID, Ordered, ContinueOnFailure, Label(c.Kind), func() {
 			var (
 				rc      *runner.RunContext
 				workdir string
@@ -79,8 +56,14 @@ var _ = Describe("compat", Label("compat"), func() {
 
 			BeforeAll(func(ctx SpecContext) {
 				var err error
-				workdir, err = os.MkdirTemp("", "compat-"+sanitize(c.ID())+"-")
+				workdir, err = os.MkdirTemp("", "compat-"+sanitize(c.ID)+"-")
 				Expect(err).NotTo(HaveOccurred())
+				// Bind-mounted at /work; the v1 distroless-nonroot image
+				// (uid 65532) can't traverse MkdirTemp's 0700. Docker
+				// Desktop hides this on macOS, hence Linux-CI-only.
+				if cli.V1.Mode == cli.ModeDocker || cli.V2.Mode == cli.ModeDocker {
+					Expect(os.Chmod(workdir, 0o755)).To(Succeed())
+				}
 				rc, err = runner.New(ctx, c, workdir)
 				Expect(err).NotTo(HaveOccurred(), "case Materialize failed")
 			})
@@ -129,7 +112,7 @@ func specForPhase(
 	phaseFn func(ctx context.Context, leg cli.Leg) runner.PhaseResult,
 ) {
 	It(string(leg)+" "+phase, func(ctx SpecContext) {
-		// A YAML-declared skip never invokes the CLI.
+		// A declared skip never invokes the CLI.
 		if expect.Outcome == cases.OutcomeSkip {
 			reason := expect.Reason
 			if reason == "" {

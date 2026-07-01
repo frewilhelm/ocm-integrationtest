@@ -1,21 +1,21 @@
-// Package cases loads compat test cases from YAML files. A case file IS a
-// real OCM component-constructor with `compat.ocm.software/*` labels
-// carrying test metadata (case id, fixtures, per-phase expectations).
+// Package cases holds the compat suite's test cases as Go tables. Each
+// Case pairs a raw component-constructor YAML string with the fixtures
+// it needs and the per-phase v1/v2 expectations. Cases live in
+// access_cases.go and inputs_cases.go and are appended to the package
+// registry at init time.
 //
-// LoadAll walks a directory tree; Materialize starts the case's fixtures,
-// substitutes `${NAME.key}` in the constructor body, strips the compat.*
-// labels, and writes a clean constructor.yaml.
+// Materialize starts a case's fixtures, resolves `${NAME.key}` placeholders
+// in the constructor body, and writes a clean constructor.yaml to the
+// case's workdir.
 package cases
 
 import (
 	"context"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -31,30 +31,38 @@ const (
 	OutcomeSkip Outcome = "skip"
 )
 
-// PhaseExpect declares what one leg is supposed to do in one phase. A
-// bare YAML string decodes into Outcome only; a mapping decodes the
-// full struct.
+// PhaseExpect declares what one leg is supposed to do in one phase.
 //
 // ErrSubstr is the literal substring asserted against CLI output on a
 // fail outcome. ExpectKind is the indirection mechanism: when many
 // cases share a wording (e.g. v2 access plugins all emit
 // `failed to get plugin for typ "..."`), they reference a registered
 // name instead, so one line changes here when v2 reworks the wording,
-// not N case YAMLs. ExpectKind and ErrSubstr are mutually exclusive
-// and that is enforced at load.
+// not N cases. ExpectKind and ErrSubstr are mutually exclusive and that
+// is enforced at package-init.
 type PhaseExpect struct {
-	Outcome    Outcome `yaml:"outcome"`
-	ErrSubstr  string  `yaml:"errSubstr,omitempty"`
-	ExpectKind string  `yaml:"expectKind,omitempty"`
-	Reason     string  `yaml:"reason,omitempty"`
+	Outcome    Outcome
+	ErrSubstr  string
+	ExpectKind string
+	Reason     string
 }
+
+// Pass / Fail / Skip are short constructors so case declarations read
+// close to the old YAML shape. `Pass` for the common
+// `v1: pass` / `v2: pass` lines; `Fail("...")` and `FailKind("...")`
+// for the substring-anchored failure variants; `Skip("...")` for
+// declared skips.
+func Pass() PhaseExpect                       { return PhaseExpect{Outcome: OutcomePass} }
+func Fail(substr string) PhaseExpect          { return PhaseExpect{Outcome: OutcomeFail, ErrSubstr: substr} }
+func FailKind(kind string) PhaseExpect        { return PhaseExpect{Outcome: OutcomeFail, ExpectKind: kind} }
+func Skip(reason string) PhaseExpect          { return PhaseExpect{Outcome: OutcomeSkip, Reason: reason} }
 
 // expectKinds maps a symbolic case-author label to the literal CLI
 // substring v1/v2 currently emit. Add an entry when a failure mode
-// repeats across cases; never inline the raw wording in case YAMLs.
+// repeats across cases; never inline the raw wording in cases.
 //
 // Each entry is the SHORTEST stable prefix of the real error that is
-// unique enough to anchor on: long enough to not match unrelated
+// unique enough to anchor on: long enough not to match unrelated
 // "plugin" mentions, short enough to survive minor message tweaks.
 var expectKinds = map[string]string{
 	// v2 has no plugin for the access type referenced in the
@@ -72,11 +80,11 @@ var expectKinds = map[string]string{
 	"v2:expected_oci_image": `: expected OCI image`,
 }
 
-// resolvedErrSubstr returns the substring to assert on for this phase:
+// ResolvedErrSubstr returns the substring to assert on for this phase:
 // the literal ErrSubstr when set, the registry lookup of ExpectKind
 // otherwise. Empty means "no substring assertion"; only the fail/pass
 // exit code matters.
-func (p PhaseExpect) resolvedErrSubstr() string {
+func (p PhaseExpect) ResolvedErrSubstr() string {
 	if p.ErrSubstr != "" {
 		return p.ErrSubstr
 	}
@@ -86,32 +94,142 @@ func (p PhaseExpect) resolvedErrSubstr() string {
 	return ""
 }
 
-// UnmarshalYAML accepts either a scalar (`pass`) or a mapping
-// (`{outcome: fail, errSubstr: ...}`). Outcome is validated against
-// the closed set {pass, fail, skip} at load; an `outcome: passes`
-// typo would otherwise survive load and only surface mid-run as a
-// generic "unknown outcome" Fail() inside assertPhase.
-func (p *PhaseExpect) UnmarshalYAML(node *yaml.Node) error {
-	switch node.Kind {
-	case yaml.ScalarNode:
-		p.Outcome = Outcome(node.Value)
-	case yaml.MappingNode:
-		type raw PhaseExpect
-		var r raw
-		if err := node.Decode(&r); err != nil {
-			return err
+type LegExpect struct {
+	V1 PhaseExpect
+	V2 PhaseExpect
+}
+
+type Expectation struct {
+	Construct LegExpect
+	Transfer  LegExpect
+}
+
+// FixtureSpec is one fixture the case needs stood up before its
+// constructor materialises. Name is the identifier the constructor
+// references via `${Name.key}`; Kind names a fixtures.StartFunc; With
+// is the per-instance config, same map-of-any shape the fixture kinds
+// already accept.
+type FixtureSpec struct {
+	Name string
+	Kind string
+	With map[string]any
+}
+
+// Case is one compat test case. Constructor is a raw component-constructor
+// YAML body; the fixture outputs are substituted into it at Materialize
+// time. Fixtures / Expect / ID come from the case declaration, not from
+// any embedded label — the constructor stays byte-for-byte what a real
+// OCM user would author.
+type Case struct {
+	ID          string
+	Kind        string // set by registerCases from the calling file
+	Constructor string
+	Fixtures    []FixtureSpec
+	Expect      Expectation
+
+	// Notes is free-form documentation for readers; not asserted on.
+	Notes string
+
+	// Projected from the constructor at package init.
+	ComponentName    string
+	ComponentVersion string
+}
+
+// allCases is populated by registerCases from each *_cases.go init().
+var allCases []*Case
+
+// All returns the registered cases in a stable order (kind, then id).
+// Callers must not mutate the returned slice; the underlying *Case
+// pointers are the singletons registered at init.
+func All() []*Case {
+	out := make([]*Case, len(allCases))
+	copy(out, allCases)
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Kind != out[j].Kind {
+			return out[i].Kind < out[j].Kind
 		}
-		*p = PhaseExpect(r)
-	default:
-		return fmt.Errorf("phase expectation: unsupported YAML kind %v", node.Kind)
+		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
+// registerCases finalises each case's Kind, validates its shape, and
+// appends it to allCases. Called from access_cases.go and
+// inputs_cases.go init(). A malformed case panics at test-binary
+// startup — same guarantee the old YAML load-time validation gave.
+func registerCases(kind string, cs ...*Case) {
+	for _, c := range cs {
+		c.Kind = kind
+		if err := c.validate(); err != nil {
+			panic(fmt.Sprintf("compat case %q: %v", c.ID, err))
+		}
+		allCases = append(allCases, c)
 	}
+}
+
+// constructorProbe is the minimal subset of a component-constructor
+// needed to project the transfer source (name, version) and enforce
+// the single-component invariant. Anything else in the YAML is passed
+// through untouched by Materialize.
+type constructorProbe struct {
+	Components []struct {
+		Name    string `yaml:"name"`
+		Version string `yaml:"version"`
+	} `yaml:"components"`
+}
+
+func (c *Case) validate() error {
+	if c.ID == "" {
+		return fmt.Errorf("ID is empty")
+	}
+	if strings.TrimSpace(c.Constructor) == "" {
+		return fmt.Errorf("Constructor is empty")
+	}
+	var probe constructorProbe
+	if err := yaml.Unmarshal([]byte(c.Constructor), &probe); err != nil {
+		return fmt.Errorf("parse constructor: %w", err)
+	}
+	// Transfer source is a single (name, version); silently picking
+	// the first of N would mask resources on later components, so
+	// reject at init instead of mid-phase. When cross-component
+	// references become a tested concern, drop this guard and grow
+	// the runner a "transfer all components" loop.
+	if n := len(probe.Components); n != 1 {
+		return fmt.Errorf("constructor must declare exactly one component (found %d)", n)
+	}
+	c.ComponentName = probe.Components[0].Name
+	c.ComponentVersion = probe.Components[0].Version
+	if c.ComponentName == "" {
+		return fmt.Errorf("component name is empty")
+	}
+	if c.ComponentVersion == "" {
+		return fmt.Errorf("component version is empty")
+	}
+	phases := []struct {
+		label string
+		exp   PhaseExpect
+	}{
+		{"construct.v1", c.Expect.Construct.V1},
+		{"construct.v2", c.Expect.Construct.V2},
+		{"transfer.v1", c.Expect.Transfer.V1},
+		{"transfer.v2", c.Expect.Transfer.V2},
+	}
+	for _, p := range phases {
+		if err := validatePhase(p.exp); err != nil {
+			return fmt.Errorf("%s: %w", p.label, err)
+		}
+	}
+	return nil
+}
+
+func validatePhase(p PhaseExpect) error {
 	switch p.Outcome {
 	case OutcomePass, OutcomeFail, OutcomeSkip, "":
 	default:
-		return fmt.Errorf("phase expectation: unknown outcome %q (want pass, fail, or skip)", p.Outcome)
+		return fmt.Errorf("unknown outcome %q (want pass, fail, or skip)", p.Outcome)
 	}
 	if p.ErrSubstr != "" && p.ExpectKind != "" {
-		return fmt.Errorf("phase expectation: errSubstr and expectKind are mutually exclusive")
+		return fmt.Errorf("errSubstr and expectKind are mutually exclusive")
 	}
 	if p.ExpectKind != "" {
 		if _, known := expectKinds[p.ExpectKind]; !known {
@@ -120,191 +238,11 @@ func (p *PhaseExpect) UnmarshalYAML(node *yaml.Node) error {
 				names = append(names, k)
 			}
 			sort.Strings(names)
-			return fmt.Errorf("phase expectation: unknown expectKind %q (registered: %s)",
+			return fmt.Errorf("unknown expectKind %q (registered: %s)",
 				p.ExpectKind, strings.Join(names, ", "))
 		}
 	}
 	return nil
-}
-
-// ResolvedErrSubstr is the public accessor for the substring assertion.
-// "" disables the assertion; the test only checks the exit code.
-func (p PhaseExpect) ResolvedErrSubstr() string { return p.resolvedErrSubstr() }
-
-type LegExpect struct {
-	V1 PhaseExpect `yaml:"v1"`
-	V2 PhaseExpect `yaml:"v2"`
-}
-
-type Expectation struct {
-	Construct LegExpect `yaml:"construct"`
-	Transfer  LegExpect `yaml:"transfer"`
-}
-
-// FixtureSpec is one entry under `compat.ocm.software/fixtures`. Name
-// is the identifier the constructor references via ${Name.key}; Kind
-// names a fixtures.StartFunc; With is the per-instance config.
-type FixtureSpec struct {
-	Name string         `yaml:"name"`
-	Kind string         `yaml:"kind"`
-	With map[string]any `yaml:"with,omitempty"`
-}
-
-type Meta struct {
-	ID    string `yaml:"id"`
-	Notes string `yaml:"notes,omitempty"`
-}
-
-type Case struct {
-	File string
-
-	Meta     Meta
-	Fixtures []FixtureSpec
-	Expect   Expectation
-
-	// Doc is the parsed constructor YAML; compat labels are still
-	// present here and only stripped at Materialize time.
-	Doc *yaml.Node
-
-	// Projected from the first component for transfer.
-	ComponentName    string
-	ComponentVersion string
-}
-
-func (c *Case) ID() string {
-	if c.Meta.ID != "" {
-		return c.Meta.ID
-	}
-	return strings.TrimSuffix(filepath.Base(c.File), filepath.Ext(c.File))
-}
-
-// Kind is the directory under cases/ (e.g. "inputs" or "access").
-func (c *Case) Kind() string {
-	rel := filepath.Dir(c.File)
-	return filepath.Base(rel)
-}
-
-// LoadAll walks root and returns cases sorted by file path.
-func LoadAll(root string) ([]*Case, error) {
-	var out []*Case
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		ext := strings.ToLower(filepath.Ext(path))
-		if ext != ".yaml" && ext != ".yml" {
-			return nil
-		}
-		c, err := loadOne(path)
-		if err != nil {
-			return fmt.Errorf("%s: %w", path, err)
-		}
-		out = append(out, c)
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].File < out[j].File })
-	return out, nil
-}
-
-func loadOne(path string) (*Case, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var doc yaml.Node
-	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return nil, fmt.Errorf("parse yaml: %w", err)
-	}
-	c := &Case{File: path, Doc: &doc}
-	if err := extractLabels(c); err != nil {
-		return nil, err
-	}
-	if err := extractComponentInfo(c); err != nil {
-		return nil, err
-	}
-	return c, nil
-}
-
-func extractLabels(c *Case) error {
-	comp, err := firstComponentNode(c.Doc)
-	if err != nil {
-		return err
-	}
-	labels := mappingValue(comp, "labels")
-	if labels == nil || labels.Kind != yaml.SequenceNode {
-		return nil
-	}
-	for _, lbl := range labels.Content {
-		if lbl.Kind != yaml.MappingNode {
-			continue
-		}
-		nameNode := mappingValue(lbl, "name")
-		valueNode := mappingValue(lbl, "value")
-		if nameNode == nil || valueNode == nil {
-			continue
-		}
-		switch nameNode.Value {
-		case "compat.ocm.software/case":
-			if err := valueNode.Decode(&c.Meta); err != nil {
-				return fmt.Errorf("decode case label: %w", err)
-			}
-		case "compat.ocm.software/fixtures":
-			if err := valueNode.Decode(&c.Fixtures); err != nil {
-				return fmt.Errorf("decode fixtures label: %w", err)
-			}
-		case "compat.ocm.software/expect":
-			if err := valueNode.Decode(&c.Expect); err != nil {
-				return fmt.Errorf("decode expect label: %w", err)
-			}
-		}
-	}
-	return nil
-}
-
-func extractComponentInfo(c *Case) error {
-	comp, err := firstComponentNode(c.Doc)
-	if err != nil {
-		return err
-	}
-	// Transfer source is a single (name, version); silently picking
-	// the first of N would mask resources on later components, so
-	// reject at load instead of mid-phase. When cross-component
-	// references become a tested concern, drop this guard and grow
-	// the runner a "transfer all components" loop.
-	if n := componentsCount(c.Doc); n > 1 {
-		return fmt.Errorf("multi-component constructors not supported (%d components found); split into separate case files", n)
-	}
-	if n := mappingValue(comp, "name"); n != nil {
-		c.ComponentName = n.Value
-	}
-	if n := mappingValue(comp, "version"); n != nil {
-		c.ComponentVersion = n.Value
-	}
-	return nil
-}
-
-func componentsCount(doc *yaml.Node) int {
-	root := doc
-	if root.Kind == yaml.DocumentNode {
-		if len(root.Content) == 0 {
-			return 0
-		}
-		root = root.Content[0]
-	}
-	if root.Kind != yaml.MappingNode {
-		return 0
-	}
-	comps := mappingValue(root, "components")
-	if comps == nil || comps.Kind != yaml.SequenceNode {
-		return 0
-	}
-	return len(comps.Content)
 }
 
 type MaterializeResult struct {
@@ -327,11 +265,23 @@ type MaterializeResult struct {
 	Skip string
 }
 
-// Materialize starts every declared fixture, builds the substitution
-// table, walks the constructor YAML replacing `${NAME.key}` in scalars,
-// strips the compat.* labels, and writes the resolved constructor to
-// <workdir>/constructor.yaml. Partial cleanups are returned on error
+// substRe matches `${NAME.key}` where key can contain further dots
+// (e.g. ${HTTP.payload.txt.url}). Substitution is performed textually
+// on the raw constructor string.
+var substRe = regexp.MustCompile(`\$\{([A-Za-z0-9_]+\.[A-Za-z0-9_.]+)\}`)
+
+// Materialize starts every declared fixture, resolves `${NAME.key}` in
+// the constructor body against fixture outputs, and writes the result
+// to <workdir>/constructor.yaml. Partial cleanups are returned on error
 // so the caller can still run them.
+//
+// Substitution is purely textual: fixture outputs today are one of
+// (HTTP URL, OCI ref host:port + path, digest hex, filesystem path)
+// and all of them are valid YAML plain scalars, so the emitted document
+// re-parses on both v1 and v2. If a future fixture surfaces a value
+// containing YAML metacharacters (newlines, leading `!`, `&`/`*`
+// anchors), the fixture itself must quote/escape before placing it on
+// the substitution map; this helper is the wrong layer for that.
 func (c *Case) Materialize(ctx context.Context, workdir string) (*MaterializeResult, error) {
 	res := &MaterializeResult{}
 	subs := map[string]string{}
@@ -339,11 +289,11 @@ func (c *Case) Materialize(ctx context.Context, workdir string) (*MaterializeRes
 	for _, fx := range c.Fixtures {
 		fn, err := fixtures.Lookup(fx.Kind)
 		if err != nil {
-			return res, fmt.Errorf("%s: %w", c.File, err)
+			return res, fmt.Errorf("%s: %w", c.ID, err)
 		}
 		sr, err := fn(ctx, workdir, fx.With)
 		if err != nil {
-			return res, fmt.Errorf("%s: start fixture %s (%s): %w", c.File, fx.Name, fx.Kind, err)
+			return res, fmt.Errorf("%s: start fixture %s (%s): %w", c.ID, fx.Name, fx.Kind, err)
 		}
 		if sr.Cleanup != nil {
 			res.Cleanups = append(res.Cleanups, sr.Cleanup)
@@ -361,209 +311,42 @@ func (c *Case) Materialize(ctx context.Context, workdir string) (*MaterializeRes
 		res.ExtraV2Env = append(res.ExtraV2Env, sr.ExtraV2Env...)
 	}
 
-	// Deep-copy so repeated Materialize calls don't see the stripped labels.
-	resolved := cloneNode(c.Doc)
-	if err := substituteScalars(resolved, subs); err != nil {
-		return res, fmt.Errorf("%s: substitute: %w", c.File, err)
-	}
-	if err := stripCompatLabels(resolved); err != nil {
-		return res, fmt.Errorf("%s: strip labels: %w", c.File, err)
-	}
-	// v1's templating pre-pass scans the whole file for $(...)/${...}
-	// directives, comments included, and bails with "missing
-	// closing brace" on a stray example. Drop comments so case YAML
-	// headers can mention ${NAME.key} freely.
-	stripComments(resolved)
-
-	out, err := yaml.Marshal(resolved)
+	resolved, err := resolvePlaceholders(c.Constructor, subs)
 	if err != nil {
-		return res, fmt.Errorf("%s: marshal resolved constructor: %w", c.File, err)
+		return res, fmt.Errorf("%s: substitute: %w", c.ID, err)
 	}
+
 	rel := "constructor.yaml"
 	full := filepath.Join(workdir, rel)
-	if err := os.WriteFile(full, out, 0o644); err != nil {
-		return res, fmt.Errorf("%s: write constructor: %w", c.File, err)
+	if err := os.WriteFile(full, []byte(resolved), 0o644); err != nil {
+		return res, fmt.Errorf("%s: write constructor: %w", c.ID, err)
 	}
 	res.ConstructorPath = full
 	res.ConstructorRel = rel
 	return res, nil
 }
 
-func firstComponentNode(doc *yaml.Node) (*yaml.Node, error) {
-	root := doc
-	if root.Kind == yaml.DocumentNode {
-		if len(root.Content) == 0 {
-			return nil, fmt.Errorf("empty document")
+// resolvePlaceholders replaces every `${NAME.key}` in src with the
+// corresponding subs entry. Unresolved keys are collected into a single
+// error so a case with three broken references reports all three at
+// once. Exported via the test file only.
+func resolvePlaceholders(src string, subs map[string]string) (string, error) {
+	var missing []string
+	seen := map[string]bool{}
+	out := substRe.ReplaceAllStringFunc(src, func(match string) string {
+		key := match[2 : len(match)-1]
+		if v, ok := subs[key]; ok {
+			return v
 		}
-		root = root.Content[0]
-	}
-	if root.Kind != yaml.MappingNode {
-		return nil, fmt.Errorf("top level is %v, want mapping", root.Kind)
-	}
-	comps := mappingValue(root, "components")
-	if comps == nil || comps.Kind != yaml.SequenceNode || len(comps.Content) == 0 {
-		return nil, fmt.Errorf("no components[] in constructor")
-	}
-	return comps.Content[0], nil
-}
-
-func mappingValue(mapNode *yaml.Node, key string) *yaml.Node {
-	if mapNode == nil || mapNode.Kind != yaml.MappingNode {
-		return nil
-	}
-	for i := 0; i+1 < len(mapNode.Content); i += 2 {
-		if mapNode.Content[i].Value == key {
-			return mapNode.Content[i+1]
-		}
-	}
-	return nil
-}
-
-var substRe = regexp.MustCompile(`\$\{([A-Za-z0-9_]+\.[A-Za-z0-9_.]+)\}`)
-
-// looksTyped reports whether s parses cleanly as a non-string YAML
-// scalar (int / float / bool / null). Conservative on purpose:
-// anything with a colon, slash, or non-numeric punctuation falls
-// through to false so URLs and refs stay !!str. Used by
-// substituteScalars to decide whether to clear the resolved tag and
-// let yaml.v3 re-infer on marshal.
-func looksTyped(s string) bool {
-	if s == "" {
-		return false
-	}
-	// Numerics: plain decimal only. No leading "+", no hex, no
-	// underscores. yaml.v3's core schema would accept more, but the
-	// long tail is safer left as !!str than retyped and surprising
-	// the case author.
-	if _, err := strconv.ParseInt(s, 10, 64); err == nil {
-		return true
-	}
-	if _, err := strconv.ParseFloat(s, 64); err == nil &&
-		// strconv.ParseFloat accepts "Inf" / "NaN" / "1e2"; the
-		// decimal-point filter prevents retyping "Inf" (a perfectly
-		// valid hostname / repo segment).
-		strings.ContainsRune(s, '.') {
-		return true
-	}
-	switch s {
-	case "true", "false", "null", "~":
-		return true
-	}
-	return false
-}
-
-// substituteScalars walks the YAML AST and resolves every
-// `${NAME.key}` reference in scalar values against `subs`. The
-// substituted value is inserted verbatim: no escaping, no quoting.
-// That is safe today because every fixture output is one of (HTTP URL,
-// OCI ref bare host:port + path, digest hex, filesystem path) and all
-// of them survive raw YAML insertion. If a future fixture surfaces a
-// string containing YAML metacharacters (newlines, leading `!`, `&`/
-// `*` anchors, etc.) or a CLI-quoted value, the fixture itself must
-// validate before placing it on the substitution map.
-// substituteScalars is the wrong layer to do that filtering.
-func substituteScalars(n *yaml.Node, subs map[string]string) error {
-	if n == nil {
-		return nil
-	}
-	if n.Kind == yaml.ScalarNode && strings.Contains(n.Value, "${") {
-		var missing []string
-		replaced := substRe.ReplaceAllStringFunc(n.Value, func(match string) string {
-			key := match[2 : len(match)-1]
-			if v, ok := subs[key]; ok {
-				return v
-			}
+		if !seen[key] {
+			seen[key] = true
 			missing = append(missing, key)
-			return match
-		})
-		if len(missing) > 0 {
-			return fmt.Errorf("unresolved placeholder(s): %s", strings.Join(missing, ", "))
 		}
-		n.Value = replaced
-		// Tag policy: clear the resolved tag for typed-looking values
-		// (number / bool / null) so yaml.v3 re-infers on marshal.
-		// `port: ${HTTP.port}` with output "43210" emits as
-		// `port: 43210` (an !!int) rather than the string "43210".
-		// Otherwise pin to !!str so a payload that happens to be
-		// numeric in a string-typed context stays quoted. Most fixture
-		// outputs are URLs/hosts/refs and fall into the second branch.
-		if looksTyped(replaced) {
-			n.Tag = ""
-			n.Style = 0
-		} else {
-			n.Tag = "!!str"
-		}
+		return match
+	})
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		return "", fmt.Errorf("unresolved placeholder(s): %s", strings.Join(missing, ", "))
 	}
-	for _, c := range n.Content {
-		if err := substituteScalars(c, subs); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func stripCompatLabels(doc *yaml.Node) error {
-	comp, err := firstComponentNode(doc)
-	if err != nil {
-		return err
-	}
-	labels := mappingValue(comp, "labels")
-	if labels == nil || labels.Kind != yaml.SequenceNode {
-		return nil
-	}
-	kept := labels.Content[:0]
-	for _, lbl := range labels.Content {
-		nameNode := mappingValue(lbl, "name")
-		if nameNode != nil && strings.HasPrefix(nameNode.Value, "compat.ocm.software/") {
-			continue
-		}
-		kept = append(kept, lbl)
-	}
-	labels.Content = kept
-	if len(labels.Content) == 0 {
-		for i := 0; i+1 < len(comp.Content); i += 2 {
-			if comp.Content[i].Value == "labels" {
-				comp.Content = append(comp.Content[:i], comp.Content[i+2:]...)
-				break
-			}
-		}
-	}
-	return nil
-}
-
-// cloneNode deep-copies a yaml.Node tree for in-place mutation
-// (substitution + label stripping) without disturbing the cached
-// original. The clone is alias-free by design: case YAMLs do not use
-// anchors (`&name`) / aliases (`*name`, `<<:`), and this cloner does
-// not preserve them. Alias targets would be silently dropped. If a
-// case ever needs anchors, either reject them at loadOne or inline
-// aliases by cloning n.Alias instead of zeroing it here.
-func cloneNode(n *yaml.Node) *yaml.Node {
-	if n == nil {
-		return nil
-	}
-	cp := *n
-	cp.Alias = nil
-	if len(n.Content) > 0 {
-		cp.Content = make([]*yaml.Node, len(n.Content))
-		for i, child := range n.Content {
-			cp.Content[i] = cloneNode(child)
-		}
-	}
-	return &cp
-}
-
-// stripComments recursively clears Head/Line/FootComment on every
-// node. v1's templating pre-pass scans comments for ${...}/$(...)
-// and a stray example would bail it with "missing closing brace".
-func stripComments(n *yaml.Node) {
-	if n == nil {
-		return
-	}
-	n.HeadComment = ""
-	n.LineComment = ""
-	n.FootComment = ""
-	for _, c := range n.Content {
-		stripComments(c)
-	}
+	return out, nil
 }

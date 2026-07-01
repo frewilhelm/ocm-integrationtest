@@ -7,8 +7,9 @@
 // Each CLI owns its own download tests.
 //
 // CLI selection happens via OCM_V1_CMD / OCM_V2_CMD, either
-// `docker:<image>` or `bin:/path/to/ocm`. Cases are YAML files under
-// compat/cases/; expectations ride on compat.ocm.software/* labels on the
-// component. See compat/README.md for the case format, the fixture
-// system, and how to add a case.
+// `docker:<image>` or `bin:/path/to/ocm`. Cases live as Go tables in
+// compat/internal/cases (access_cases.go, inputs_cases.go); each entry
+// pairs a raw component-constructor YAML body with its fixtures and the
+// per-phase v1/v2 expectations. See compat/README.md for how to add a
+// case and how the fixture system works.
 package compat

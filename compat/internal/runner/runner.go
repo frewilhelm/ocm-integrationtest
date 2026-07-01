@@ -196,7 +196,7 @@ func constructArgs(leg cli.Leg, ctfArg, ctorArg string) ([]string, error) {
 
 func (rc *RunContext) transferTarget(leg cli.Leg, regAddr string) string {
 	rewritten := strings.TrimPrefix(cli.URLForContainer(rc.Workdir, "http://"+regAddr), "http://")
-	caseID := sanitizeID(rc.Case.ID())
+	caseID := sanitizeID(rc.Case.ID)
 	return "http://" + rewritten + "/compat/" + caseID + "/" + string(leg)
 }
 

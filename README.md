@@ -32,8 +32,10 @@ This project uses Python 3.9+ to run the tests against the [OCM CLI](https://git
 The `compat/` directory holds a separate Go/Ginkgo suite that runs the same
 OCM component-constructor through both the v1 (`open-component-model/ocm`)
 and v2 (`open-component-model/open-component-model`) CLIs, through two
-phases each (construct, then transfer). Cases are YAML files under
-`compat/cases/`; expectations ride on `compat.ocm.software/*` labels. See
+phases each (construct, then transfer). Cases live as Go tables in
+`compat/internal/cases/` (one `&Case{}` per access/input type), pairing
+a raw component-constructor YAML body with fixtures and per-leg
+expectations. See
 [`compat/README.md`](compat/README.md) for the layout, fixture system, and
 how to add a case. CI runs it nightly via
 [`.github/workflows/compat-test.yaml`](.github/workflows/compat-test.yaml).

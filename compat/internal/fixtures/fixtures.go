@@ -1,7 +1,7 @@
-// Package fixtures provides the named "fixture kinds" referenced from case
-// YAML (compat.ocm.software/fixtures labels). A fixture stands up
-// something the constructor needs to point at: an HTTP file server, a
-// Maven repo, an OCI registry artefact, an S3 bucket, etc.
+// Package fixtures provides the named "fixture kinds" referenced from
+// each case's Fixtures list (see compat/internal/cases). A fixture
+// stands up something the constructor needs to point at: an HTTP file
+// server, a Maven repo, an OCI registry artefact, an S3 bucket, etc.
 //
 // Outputs are flat string-keyed values substituted into the constructor
 // wherever `${NAME.key}` appears.
