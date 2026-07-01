@@ -58,12 +58,6 @@ var _ = Describe("compat", Label("compat"), func() {
 				var err error
 				workdir, err = os.MkdirTemp("", "compat-"+sanitize(c.ID)+"-")
 				Expect(err).NotTo(HaveOccurred())
-				// Bind-mounted at /work; the v1 distroless-nonroot image
-				// (uid 65532) can't traverse MkdirTemp's 0700. Docker
-				// Desktop hides this on macOS, hence Linux-CI-only.
-				if cli.V1.Mode == cli.ModeDocker || cli.V2.Mode == cli.ModeDocker {
-					Expect(os.Chmod(workdir, 0o755)).To(Succeed())
-				}
 				rc, err = runner.New(ctx, c, workdir)
 				Expect(err).NotTo(HaveOccurred(), "case Materialize failed")
 			})

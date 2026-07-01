@@ -281,6 +281,15 @@ func RunWithEnv(ctx context.Context, leg Leg, workdir string, extraEnv []string,
 			"run", "--rm",
 			"--add-host", "host.docker.internal:host-gateway",
 		}
+		// Map the container process to the host uid so files written
+		// into the bind-mounted workdir are owned by the runner user.
+		// Otherwise the v1 distroless-nonroot image (uid 65532) can't
+		// write to /work (owned by the runner), and any files it does
+		// write are unreadable by later legs. macOS Docker Desktop
+		// masks this, hence Linux-CI-only.
+		if uid, gid := os.Getuid(), os.Getgid(); uid >= 0 {
+			args = append(args, "-u", fmt.Sprintf("%d:%d", uid, gid))
+		}
 		for _, kv := range extraEnv {
 			args = append(args, "-e", kv)
 		}
